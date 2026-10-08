@@ -68,9 +68,10 @@ $roles = Invoke-Az role assignment list --assignee $assignee --include-inherited
 
 $hubScope = "$subscriptionScope/resourceGroups/$HubResourceGroupName"
 $subscriptionWideScopes = @('/', $subscriptionScope)
-$hasDeployRights = $roles | Where-Object { $_.role -in @('Owner', 'Contributor') -and $_.scope -in $subscriptionWideScopes }
+$workloadScope = "$subscriptionScope/resourceGroups/$resourceGroupName"
+$hasDeployRights = $roles | Where-Object { $_.role -in @('Owner', 'Contributor') -and $_.scope -in ($subscriptionWideScopes + $workloadScope) }
 if (-not $hasDeployRights) {
-    throw "Principal '$assignee' needs Owner or Contributor on $subscriptionScope to create '$resourceGroupName' and the workload resources. Grant it with 'az role assignment create' and retry."
+    throw "Principal '$assignee' needs Owner or Contributor on '$resourceGroupName' (or the subscription) to deploy the workload resources. Grant it with 'az role assignment create' and retry."
 }
 $hubRights = $roles | Where-Object {
     $_.role -in @('Owner', 'Contributor', 'Network Contributor') -and $_.scope -in ($subscriptionWideScopes + $hubScope)
@@ -80,10 +81,19 @@ if (-not $hubRights) {
 }
 Write-Host "Principal '$assignee' has the required roles."
 
+$resourceGroupExists = (Invoke-Az group exists --name $resourceGroupName) -eq 'true'
+if (-not $resourceGroupExists -and $WhatIfOnly) {
+    Write-Warning "Resource group '$resourceGroupName' does not exist yet; what-if skipped."
+    return
+}
+if (-not $resourceGroupExists) {
+    Invoke-Az group create --name $resourceGroupName --location $Location --tags workload=hotelbooking environment=$Environment --output none
+}
+
 Write-Host '== Preflight 3/3: what-if' -ForegroundColor Cyan
-Invoke-Az deployment sub what-if `
+Invoke-Az deployment group what-if `
     --name $deploymentName `
-    --location $Location `
+    --resource-group $resourceGroupName `
     --template-file $templateFile `
     --parameters $parameterArgs `
     --validation-level Provider
@@ -93,15 +103,15 @@ if ($WhatIfOnly) {
     return
 }
 
-if (-not $Force -and -not $PSCmdlet.ShouldContinue("Deploy '$deploymentName' to subscription $($account.id)?", 'Confirm deployment')) {
+if (-not $Force -and -not $PSCmdlet.ShouldContinue("Deploy '$deploymentName' to resource group '$resourceGroupName'?", 'Confirm deployment')) {
     Write-Host 'Deployment cancelled.' -ForegroundColor Yellow
     return
 }
 
 Write-Host '== Deploying' -ForegroundColor Cyan
-Invoke-Az deployment sub create `
+Invoke-Az deployment group create `
     --name $deploymentName `
-    --location $Location `
+    --resource-group $resourceGroupName `
     --template-file $templateFile `
     --parameters $parameterArgs `
     --query properties.outputs `

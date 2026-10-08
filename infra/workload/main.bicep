@@ -1,4 +1,4 @@
-targetScope = 'subscription'
+targetScope = 'resourceGroup'
 
 @description('Azure region for the workload.')
 param location string = 'polandcentral'
@@ -79,19 +79,11 @@ param tags object = {
   environment: environment
 }
 
-var resourceGroupName = 'rg-${workload}-${environment}'
 var spokeVnetName = 'vnet-${workload}-${environment}-${locationToken}-001'
 var hubVnetId = resourceId(subscription().subscriptionId, hubResourceGroupName, 'Microsoft.Network/virtualNetworks', hubVnetName)
 
-resource workloadResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: resourceGroupName
-  location: location
-  tags: tags
-}
-
 module spoke './modules/spoke.bicep' = {
   name: 'workload-spoke'
-  scope: workloadResourceGroup
   params: {
     location: location
     spokeVnetName: spokeVnetName
@@ -104,7 +96,6 @@ module spoke './modules/spoke.bicep' = {
 
 module workloadResources './modules/workload.bicep' = {
   name: 'workload-resources'
-  scope: workloadResourceGroup
   params: {
     location: location
     workload: workload
@@ -134,7 +125,7 @@ module workloadResources './modules/workload.bicep' = {
   }
 }
 
-output workloadResourceGroupName string = workloadResourceGroup.name
+output workloadResourceGroupName string = resourceGroup().name
 output spokeVnetId string = spoke.outputs.spokeVnetId
 output frontendFqdn string = workloadResources.outputs.frontendFqdn
 output backendInternalFqdn string = workloadResources.outputs.backendInternalFqdn
