@@ -73,6 +73,13 @@ $subscriptionScope = "/subscriptions/$subscriptionId"
 $hubScope = "$subscriptionScope/resourceGroups/$HubResourceGroupName"
 $repoApi = "repos/$Owner/$Repository"
 
+# New repos emit an immutable-ID subject (repo:owner@id/name@id); read it from GitHub instead of assuming the name form.
+$subjectClaim = Invoke-Gh api "$repoApi/actions/oidc/customization/sub" | ConvertFrom-Json
+if (-not $subjectClaim.use_default) {
+    throw "Repository $Owner/$Repository uses a custom OIDC subject template; this script only supports the default claim format."
+}
+$subjectPrefix = if ($subjectClaim.sub_claim_prefix) { $subjectClaim.sub_claim_prefix } else { "repo:${Owner}/${Repository}" }
+
 Write-Host "Repository   : $Owner/$Repository" -ForegroundColor Cyan
 Write-Host "Subscription : $subscriptionId (tenant $tenantId)" -ForegroundColor Cyan
 
@@ -101,7 +108,7 @@ function Confirm-RoleAssignment {
 
 function Confirm-FederatedCredential {
     param([string]$IdentityName, [string]$EnvironmentName)
-    $subject = "repo:${Owner}/${Repository}:environment:${EnvironmentName}"
+    $subject = "${subjectPrefix}:environment:${EnvironmentName}"
     $credentialName = "github-$EnvironmentName"
     $credentials = @(Invoke-Az identity federated-credential list --identity-name $IdentityName `
             --resource-group $IdentityResourceGroupName --output json | ConvertFrom-Json)
