@@ -1,0 +1,145 @@
+name: Infra deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - infra/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-deploy
+  cancel-in-progress: false
+
+env:
+  TEMPLATE_FILE: infra/workload/main.bicep
+  AZURE_CORE_NO_COLOR: "true"
+
+jobs:
+  lint:
+    name: Lint Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build template
+        run: az bicep build --file "$TEMPLATE_FILE" --stdout > /dev/null
+
+      - name: Build parameter files
+        run: |
+          for parameter_file in infra/workload/main.*.bicepparam; do
+            echo "Validating $parameter_file"
+            az bicep build-params --file "$parameter_file" --stdout > /dev/null
+          done
+
+  deploy-test:
+    name: Deploy test
+    needs: lint
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PARAMETER_FILE: infra/workload/main.test.bicepparam
+      ENVIRONMENT_NAME: test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: What-if
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -o pipefail
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "workload-$ENVIRONMENT_NAME" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETER_FILE" \
+            --validation-level Provider | tee whatif.txt
+          {
+            echo "### What-if: $ENVIRONMENT_NAME ($RESOURCE_GROUP)"
+            echo '```'
+            cat whatif.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "workload-$ENVIRONMENT_NAME" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETER_FILE" \
+            --query properties.outputs \
+            --output json
+
+  deploy-prod:
+    name: Deploy prod
+    needs: deploy-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PARAMETER_FILE: infra/workload/main.prod.bicepparam
+      ENVIRONMENT_NAME: prod
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: What-if
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -o pipefail
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "workload-$ENVIRONMENT_NAME" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETER_FILE" \
+            --validation-level Provider | tee whatif.txt
+          {
+            echo "### What-if: $ENVIRONMENT_NAME ($RESOURCE_GROUP)"
+            echo '```'
+            cat whatif.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "workload-$ENVIRONMENT_NAME" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETER_FILE" \
+            --query properties.outputs \
+            --output json
